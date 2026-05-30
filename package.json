@@ -1,0 +1,28 @@
+{
+  "name": "cycleonai",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "test:neis": "tsx scripts/test-neis.ts",
+    "test:schoolinfo": "tsx scripts/test-schoolinfo.ts",
+    "fetch:schools": "tsx scripts/fetch-school-master.ts"
+  },
+  "dependencies": {
+    "dotenv": "latest",
+    "next": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "tsx": "latest",
+    "typescript": "latest"
+  }
+}
+
