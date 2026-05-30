@@ -1,0 +1,51 @@
+[
+  {
+    "requestId": "R001",
+    "requestSchool": "가수원중학교",
+    "subject": "수학",
+    "grade": 1,
+    "requestedHours": 4,
+    "reason": "학기 중 시간강사 미충원으로 주당 수학 수업 지원이 필요함"
+  },
+  {
+    "requestId": "R002",
+    "requestSchool": "갈마중학교",
+    "subject": "영어",
+    "grade": 2,
+    "requestedHours": 3,
+    "reason": "교원 휴직에 따른 단기 순회 수업 지원 요청"
+  },
+  {
+    "requestId": "R003",
+    "requestSchool": "대전가오중학교",
+    "subject": "과학",
+    "grade": 3,
+    "requestedHours": 5,
+    "reason": "과학 선택 활동 확대에 따른 겸임 수업 지원 필요"
+  },
+  {
+    "requestId": "R004",
+    "requestSchool": "대전갑천중학교",
+    "subject": "국어",
+    "grade": 1,
+    "requestedHours": 2,
+    "reason": "기초학력 보정 수업 운영을 위한 순회교사 요청"
+  },
+  {
+    "requestId": "R005",
+    "requestSchool": "대덕중학교",
+    "subject": "정보",
+    "grade": 2,
+    "requestedHours": 4,
+    "reason": "디지털 소양 수업 편성 확대에 따른 겸임 지원 필요"
+  },
+  {
+    "requestId": "R006",
+    "requestSchool": "기성중학교",
+    "subject": "체육",
+    "grade": 3,
+    "requestedHours": 3,
+    "reason": "소규모 학교 예체능 수업 운영 보완"
+  }
+]
+
