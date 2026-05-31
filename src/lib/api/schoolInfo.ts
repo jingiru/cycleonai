@@ -141,7 +141,7 @@ export function fetchDaejeonMiddleSchoolInfo(apiType: SchoolInfoApiType | string
 
 export function fetchDaejeonMiddleSchoolDisclosure(
   apiType: SchoolInfoApiType | string,
-  pbanYr = DEFAULT_SCHOOLINFO_PBAN_YEAR,
+  pbanYr: string | number = DEFAULT_SCHOOLINFO_PBAN_YEAR,
   params?: Record<string, string | number | undefined>,
 ) {
   return fetchSchoolInfo({

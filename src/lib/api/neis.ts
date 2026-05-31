@@ -25,6 +25,22 @@ export type NeisSchoolInfoRow = {
   [key: string]: unknown;
 };
 
+export type NeisMiddleTimetableRow = {
+  ATPT_OFCDC_SC_CODE?: string;
+  ATPT_OFCDC_SC_NM?: string;
+  SD_SCHUL_CODE?: string;
+  SCHUL_NM?: string;
+  AY?: string;
+  SEM?: string;
+  ALL_TI_YMD?: string;
+  GRADE?: string;
+  CLASS_NM?: string;
+  PERIO?: string;
+  ITRT_CNTNT?: string;
+  LOAD_DTM?: string;
+  [key: string]: unknown;
+};
+
 export type NeisListResponse<T> = {
   rows: T[];
   totalCount: number;
@@ -152,3 +168,22 @@ export function fetchDaejeonMiddleSchools(pageSize = 100) {
   });
 }
 
+export function fetchMiddleSchoolTimetable(params: {
+  officeCode: string;
+  schoolCode: string;
+  year: number;
+  semester?: number;
+  grade?: number;
+}) {
+  return fetchAllNeisPages<NeisMiddleTimetableRow>({
+    endpoint: "misTimetable",
+    pageSize: 1000,
+    params: {
+      ATPT_OFCDC_SC_CODE: params.officeCode,
+      SD_SCHUL_CODE: params.schoolCode,
+      AY: params.year,
+      SEM: params.semester,
+      GRADE: params.grade,
+    },
+  });
+}
