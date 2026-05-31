@@ -1,3 +1,6 @@
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+
 import { fetchMiddleSchoolTimetable, type NeisMiddleTimetableRow } from "@/lib/api/neis";
 import {
   fetchDaejeonMiddleSchoolDisclosure,
@@ -12,6 +15,7 @@ export type TeacherCountTrend = {
   subject: string;
   teacherCount: number;
   changeFromPreviousYear: number | null;
+  source?: "api" | "web";
 };
 
 export type TimetableRecord = {
@@ -85,6 +89,10 @@ const SUBJECTS = [
   "예술",
 ];
 
+const SCHOOLINFO_WEB_BASE_URL = "https://www.schoolinfo.go.kr";
+const TEACHER_BY_SUBJECT_WEB_URL = `${SCHOOLINFO_WEB_BASE_URL}/ei/pp/Pneipp_b11_s0p.do`;
+const SCHOOLINFO_WEB_CACHE_DIR = path.join(process.cwd(), "data", "cache");
+
 function normalizeCourseContent(content: string) {
   const cleaned = content
     .replace(/\[[^\]]+\]/g, "")
@@ -103,6 +111,22 @@ function normalizeCourseContent(content: string) {
 
 function isInstructionalSubject(subject: string) {
   return SUBJECTS.includes(subject);
+}
+
+function decodeHtml(value: string) {
+  return value
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function stripTags(value: string) {
+  return decodeHtml(value.replace(/<[^>]*>/g, ""));
 }
 
 function readText(row: Record<string, unknown>, keys: string[]) {
@@ -138,7 +162,22 @@ function isSameSchool(row: SchoolInfoRow, school: SchoolCandidate) {
   return code === school.schoolInfoCode || name === school.schoolName;
 }
 
-function parseTeacherRows(year: number, rows: SchoolInfoRow[]): TeacherCountTrend[] {
+function mergeTeacherRows(rows: TeacherCountTrend[]) {
+  const merged = new Map<string, TeacherCountTrend>();
+
+  for (const item of rows) {
+    const key = `${item.year}:${item.subject}`;
+    const current = merged.get(key);
+    merged.set(key, {
+      ...item,
+      teacherCount: (current?.teacherCount || 0) + item.teacherCount,
+    });
+  }
+
+  return [...merged.values()].filter((item) => item.subject && item.teacherCount >= 0);
+}
+
+function parseTeacherRows(year: number, rows: SchoolInfoRow[], source: "api" | "web" = "api"): TeacherCountTrend[] {
   const parsed: TeacherCountTrend[] = [];
 
   for (const rawRow of rows) {
@@ -171,6 +210,7 @@ function parseTeacherRows(year: number, rows: SchoolInfoRow[]): TeacherCountTren
         subject: normalizeSubjectName(explicitSubject),
         teacherCount: explicitCount,
         changeFromPreviousYear: null,
+        source,
       });
       continue;
     }
@@ -183,22 +223,13 @@ function parseTeacherRows(year: number, rows: SchoolInfoRow[]): TeacherCountTren
           subject,
           teacherCount: count,
           changeFromPreviousYear: null,
+          source,
         });
       }
     }
   }
 
-  const merged = new Map<string, TeacherCountTrend>();
-  for (const item of parsed) {
-    const key = `${item.year}:${item.subject}`;
-    const current = merged.get(key);
-    merged.set(key, {
-      ...item,
-      teacherCount: (current?.teacherCount || 0) + item.teacherCount,
-    });
-  }
-
-  return [...merged.values()].filter((item) => item.subject && item.teacherCount >= 0);
+  return mergeTeacherRows(parsed);
 }
 
 function withTeacherDeltas(rows: TeacherCountTrend[]) {
@@ -219,6 +250,159 @@ function withTeacherDeltas(rows: TeacherCountTrend[]) {
         })),
     )
     .sort((a, b) => b.year - a.year || a.subject.localeCompare(b.subject, "ko"));
+}
+
+async function readCache<T>(cacheKey: string): Promise<T | null> {
+  try {
+    const content = await readFile(path.join(SCHOOLINFO_WEB_CACHE_DIR, `${cacheKey}.json`), "utf8");
+    return JSON.parse(content) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function writeCache(cacheKey: string, data: unknown) {
+  await mkdir(SCHOOLINFO_WEB_CACHE_DIR, { recursive: true });
+  await writeFile(
+    path.join(SCHOOLINFO_WEB_CACHE_DIR, `${cacheKey}.json`),
+    `${JSON.stringify(data, null, 2)}\n`,
+    "utf8",
+  );
+}
+
+async function postSchoolInfoWeb<T>(pathname: string, params: URLSearchParams): Promise<T> {
+  const response = await fetch(`${SCHOOLINFO_WEB_BASE_URL}${pathname}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+      Referer: `${SCHOOLINFO_WEB_BASE_URL}/ei/ss/pneiss_a03_s0.do`,
+      "User-Agent": "Mozilla/5.0",
+    },
+    body: params.toString(),
+  });
+
+  if (!response.ok) {
+    throw new Error(`SchoolInfo web request failed: ${response.status}`);
+  }
+
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    return (await response.json()) as T;
+  }
+
+  const charset = contentType.match(/charset=([^;]+)/i)?.[1]?.trim().toLowerCase() || "utf-8";
+  const buffer = await response.arrayBuffer();
+  return new TextDecoder(charset).decode(buffer) as T;
+}
+
+async function findSchoolInfoWebId(schoolName: string) {
+  const cacheKey = `schoolinfo-web-school-${encodeURIComponent(schoolName)}`;
+  const cached = await readCache<{ shlIdfCd: string }>(cacheKey);
+
+  if (cached?.shlIdfCd) {
+    return cached.shlIdfCd;
+  }
+
+  const schools = await postSchoolInfoWeb<Array<{ SHL_NM?: string; SHL_IDF_CD?: string }>>(
+    "/ei/ss/pneiss_a04_s0/getSchoolList.do",
+    new URLSearchParams({ SEARCH_WORD: schoolName }),
+  );
+  const school = schools.find((item) => item.SHL_NM === schoolName) || schools[0];
+  const shlIdfCd = school?.SHL_IDF_CD;
+
+  if (!shlIdfCd) {
+    throw new Error(`SchoolInfo web school id not found: ${schoolName}`);
+  }
+
+  await writeCache(cacheKey, { schoolName, shlIdfCd });
+  return shlIdfCd;
+}
+
+function parseTeacherRowsFromWebHtml(year: number, html: string): TeacherCountTrend[] {
+  const captionIndex = html.indexOf("<caption>과목별 교원 현황</caption>");
+  if (captionIndex < 0) {
+    return [];
+  }
+
+  const tableStart = html.lastIndexOf("<table", captionIndex);
+  const tableEnd = html.indexOf("</table>", captionIndex);
+  if (tableStart < 0 || tableEnd < 0) {
+    return [];
+  }
+
+  const tableHtml = html.slice(tableStart, tableEnd + "</table>".length);
+  const rows: TeacherCountTrend[] = [];
+  const rowMatches = tableHtml.matchAll(/<tr[\s\S]*?<\/tr>/gi);
+
+  for (const rowMatch of rowMatches) {
+    const cellMatches = [...rowMatch[0].matchAll(/<(?:th|td)[^>]*>([\s\S]*?)<\/(?:th|td)>/gi)];
+    const cells = cellMatches.map((match) => stripTags(match[1]));
+
+    if (cells.length < 5 || cells[0] === "교과" || cells[1] === "과목" || cells[0].includes("총")) {
+      continue;
+    }
+
+    const subject = normalizeSubjectName(cells[1]);
+    const teacherCount = Number(cells[4].replace(/,/g, ""));
+
+    if (subject && Number.isFinite(teacherCount)) {
+      rows.push({
+        year,
+        subject,
+        teacherCount,
+        changeFromPreviousYear: null,
+        source: "web",
+      });
+    }
+  }
+
+  return mergeTeacherRows(rows);
+}
+
+async function fetchTeacherRowsFromSchoolInfoWeb(
+  school: SchoolCandidate,
+  year: number,
+): Promise<TeacherCountTrend[]> {
+  const cacheKey = `schoolinfo-web-teacher-subject-${school.schoolInfoCode}-${year}`;
+  const cached = await readCache<{ rows: TeacherCountTrend[] }>(cacheKey);
+
+  if (cached?.rows?.length) {
+    return cached.rows;
+  }
+
+  const shlIdfCd = await findSchoolInfoWebId(school.schoolName);
+  const html = await postSchoolInfoWeb<string>(
+    "/ei/pp/Pneipp_b11_s0p.do",
+    new URLSearchParams({
+      GS_HANGMOK_CD: "11",
+      GS_HANGMOK_NO: "6-나-2",
+      GS_HANGMOK_NM: "표시과목별 교원 현황",
+      GS_BURYU_CD: "JG060",
+      JG_BURYU_CD: "JG060",
+      JG_HANGMOK_CD: "24",
+      JG_GUBUN: "1",
+      JG_YEAR2: String(year),
+      SHL_IDF_CD: shlIdfCd,
+      GS_TYPE: "Y",
+      JG_YEAR: String(year),
+      CHOSEN_JG_YEAR: String(year),
+      PRE_JG_YEAR: String(year),
+    }),
+  );
+  const rows = parseTeacherRowsFromWebHtml(year, html);
+
+  if (rows.length > 0) {
+    await writeCache(cacheKey, {
+      schoolName: school.schoolName,
+      schoolInfoCode: school.schoolInfoCode,
+      year,
+      source: "schoolinfo-web",
+      fetchedAt: new Date().toISOString(),
+      rows,
+    });
+  }
+
+  return rows;
 }
 
 function toTimetableRecord(year: number, semester: number, row: NeisMiddleTimetableRow): TimetableRecord {
@@ -319,6 +503,8 @@ export async function buildSchoolAnalysis(school: SchoolCandidate, years: number
   const timetableRows: TimetableRecord[] = [];
 
   for (const year of years) {
+    let apiTeacherRows: TeacherCountTrend[] = [];
+
     try {
       const disclosure = await fetchDaejeonMiddleSchoolDisclosure(
         SCHOOLINFO_API_TYPES.teacherBySubject,
@@ -326,10 +512,26 @@ export async function buildSchoolAnalysis(school: SchoolCandidate, years: number
         { depthNo: "20" },
       );
       const schoolRows = disclosure.rows.filter((row) => isSameSchool(row, school));
-      teacherRows.push(...parseTeacherRows(year, schoolRows));
+      apiTeacherRows = parseTeacherRows(year, schoolRows, "api");
     } catch (error) {
       notes.push(`학교알리미 ${year}년 교원수 조회 실패`);
       console.error(error);
+    }
+
+    if (apiTeacherRows.length > 0) {
+      teacherRows.push(...apiTeacherRows);
+    } else {
+      try {
+        const webTeacherRows = await fetchTeacherRowsFromSchoolInfoWeb(school, year);
+        teacherRows.push(...webTeacherRows);
+
+        if (webTeacherRows.length > 0) {
+          notes.push(`학교알리미 ${year}년 교원수는 API 미반영으로 웹 공시 데이터를 사용했습니다.`);
+        }
+      } catch (error) {
+        notes.push(`학교알리미 ${year}년 웹 공시 교원수 조회 실패`);
+        console.error(error);
+      }
     }
 
     for (const semester of [1, 2]) {

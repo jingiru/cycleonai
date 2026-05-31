@@ -18,6 +18,7 @@ type TeacherCountTrend = {
   subject: string;
   teacherCount: number;
   changeFromPreviousYear: number | null;
+  source?: "api" | "web";
 };
 
 type TimetableRecord = {
