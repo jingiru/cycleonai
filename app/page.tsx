@@ -71,7 +71,12 @@ type Analysis = {
   }>;
 };
 
-const DEFAULT_YEARS = [2025, 2024, 2023];
+const DEFAULT_YEARS = [2024, 2025, 2026];
+
+type TeacherCountPivotRow = {
+  subject: string;
+  values: Record<number, number | null>;
+};
 
 function formatDelta(value: number | null) {
   if (value === null) return "-";
@@ -118,6 +123,66 @@ function DataTable<T>({
   );
 }
 
+function getTrendClass(row: TeacherCountPivotRow, year: number, years: number[]) {
+  const yearIndex = years.indexOf(year);
+  const previousYear = years[yearIndex - 1];
+
+  if (previousYear === undefined) {
+    return "";
+  }
+
+  const current = row.values[year];
+  const previous = row.values[previousYear];
+
+  if (current === null || previous === null || current === previous) {
+    return "";
+  }
+
+  return current > previous ? "increase" : "decrease";
+}
+
+function TeacherCountPivotTable({
+  rows,
+  years,
+}: {
+  rows: TeacherCountPivotRow[];
+  years: number[];
+}) {
+  if (rows.length === 0) {
+    return <div className="empty">학교알리미에서 해당 학교의 과목별 교원수 데이터를 찾지 못했습니다.</div>;
+  }
+
+  return (
+    <div className="tableWrap">
+      <table className="teacherTrendTable">
+        <thead>
+          <tr>
+            <th>과목</th>
+            {years.map((year) => (
+              <th key={year}>{year}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.subject}>
+              <th scope="row">{row.subject}</th>
+              {years.map((year) => {
+                const value = row.values[year];
+                return (
+                  <td className={`trendCell ${getTrendClass(row, year, years)}`} key={year}>
+                    {value ?? "-"}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function Home() {
   const [query, setQuery] = useState("");
   const [schools, setSchools] = useState<SchoolCandidate[]>([]);
@@ -136,6 +201,27 @@ export default function Home() {
       .filter((row) => row.subject.includes(normalized) || row.subjectGroup.includes(normalized))
       .slice(0, 150);
   }, [analysis, subjectFilter]);
+
+  const teacherCountPivot = useMemo(() => {
+    if (!analysis) return [];
+
+    const years = [...analysis.years].sort((a, b) => a - b);
+    const bySubject = new Map<string, TeacherCountPivotRow>();
+
+    for (const row of analysis.teacherCounts) {
+      const current =
+        bySubject.get(row.subject) ||
+        {
+          subject: row.subject,
+          values: Object.fromEntries(years.map((year) => [year, null])) as Record<number, number | null>,
+        };
+
+      current.values[row.year] = row.teacherCount;
+      bySubject.set(row.subject, current);
+    }
+
+    return [...bySubject.values()].sort((a, b) => a.subject.localeCompare(b.subject, "ko"));
+  }, [analysis]);
 
   async function searchSchools(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -269,18 +355,11 @@ export default function Home() {
                 <p className="eyebrow">SchoolInfo</p>
                 <h2>과목별 교원수 연도별 추이</h2>
               </div>
-              <span>{analysis.years.join(", ")}년</span>
+              <span>{[...analysis.years].sort((a, b) => a - b).join(", ")}년</span>
             </div>
-            <DataTable
-              rows={analysis.teacherCounts}
-              empty="학교알리미에서 해당 학교의 과목별 교원수 데이터를 찾지 못했습니다."
-              rowKey={(row) => `${row.year}-${row.subject}`}
-              columns={[
-                { label: "연도", render: (row) => row.year },
-                { label: "과목", render: (row) => row.subject },
-                { label: "교원수", render: (row) => `${row.teacherCount}명` },
-                { label: "전년 대비", render: (row) => formatDelta(row.changeFromPreviousYear) },
-              ]}
+            <TeacherCountPivotTable
+              rows={teacherCountPivot}
+              years={[...analysis.years].sort((a, b) => a - b)}
             />
           </section>
 

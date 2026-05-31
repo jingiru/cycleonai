@@ -287,6 +287,35 @@ tbody tr:last-child td {
   border-bottom: 0;
 }
 
+.teacherTrendTable {
+  min-width: 560px;
+}
+
+.teacherTrendTable th:not(:first-child),
+.teacherTrendTable td {
+  text-align: center;
+}
+
+.teacherTrendTable tbody th {
+  background: #ffffff;
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+}
+
+.trendCell {
+  font-weight: 800;
+}
+
+.trendCell.increase {
+  background: #ffe4e4;
+  color: #a51f1f;
+}
+
+.trendCell.decrease {
+  background: #e2efff;
+  color: #1f5fa8;
+}
+
 .statLine {
   display: flex;
   gap: 10px;
