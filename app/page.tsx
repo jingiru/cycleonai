@@ -2,12 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 
 import {
-  type CircuitRequest,
-  type PreviousAssignment,
-  type SchoolLocation,
-  type TeacherCapacity,
-  scoreMatch,
-} from "@/lib/matching/score";
+  estimateCircuitDemand,
+  estimateCircuitSupply,
+  type SubjectHourRecord,
+  type TeacherSubjectCountRecord,
+} from "@/lib/circuit/estimate";
 
 type SchoolMasterRow = {
   schoolName: string;
@@ -21,38 +20,8 @@ type SchoolMasterRow = {
   coedType: string;
 };
 
-type RecommendationRow = {
-  requestId: string;
-  requestSchool: string;
-  subject: string;
-  grade: number;
-  requestedHours: number;
-  teacherId: string;
-  homeSchool: string;
-  total: number;
-  distanceKm: number | null;
-  reason: string;
-};
-
-function readSchoolMaster(): SchoolMasterRow[] {
-  const filePath = path.join(process.cwd(), "data", "processed", "school_master.json");
-
-  if (!fs.existsSync(filePath)) {
-    return [];
-  }
-
-  try {
-    const raw = fs.readFileSync(filePath, "utf8");
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (error) {
-    console.error("[page] failed to read school_master.json", error);
-    return [];
-  }
-}
-
-function readSampleJsonArray<T>(fileName: string): T[] {
-  const filePath = path.join(process.cwd(), "data", "sample", fileName);
+function readDataJsonArray<T>(folder: "processed" | "sample", fileName: string): T[] {
+  const filePath = path.join(process.cwd(), "data", folder, fileName);
 
   if (!fs.existsSync(filePath)) {
     return [];
@@ -63,167 +32,227 @@ function readSampleJsonArray<T>(fileName: string): T[] {
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? (parsed as T[]) : [];
   } catch (error) {
-    console.error(`[page] failed to read data/sample/${fileName}`, error);
+    console.error(`[page] failed to read data/${folder}/${fileName}`, error);
     return [];
   }
 }
 
-function buildSchoolLocationMap(schools: SchoolMasterRow[]): Map<string, SchoolLocation> {
-  return new Map(
-    schools.map((school) => [
-      school.schoolName,
-      {
-        schoolName: school.schoolName,
-        latitude: school.latitude,
-        longitude: school.longitude,
-      },
-    ]),
-  );
+function formatNumber(value: number): string {
+  return value.toLocaleString("ko-KR");
 }
 
-function buildRecommendations(schools: SchoolMasterRow[]): RecommendationRow[] {
-  const requests = readSampleJsonArray<CircuitRequest>("circuit_requests.json");
-  const teachers = readSampleJsonArray<TeacherCapacity>("teacher_capacity.json");
-  const previousAssignments = readSampleJsonArray<PreviousAssignment>("previous_assignments.json");
-  const schoolLocations = buildSchoolLocationMap(schools);
+function formatHours(value: number | null): string {
+  return value === null ? "-" : `${value.toFixed(1)}시간`;
+}
 
-  return requests
-    .flatMap((request) =>
-      teachers
-        .filter(
-          (teacher) =>
-            teacher.subject === request.subject &&
-            teacher.availableWeeklyHours > 0 &&
-            teacher.availableWeeklyHours >= Math.min(request.requestedHours, 2),
-        )
-        .map((teacher) => {
-          const score = scoreMatch({
-            request,
-            teacher,
-            previousAssignments,
-            requestSchool: schoolLocations.get(request.requestSchool),
-            teacherSchool: schoolLocations.get(teacher.homeSchool),
-          });
-
-          return {
-            requestId: request.requestId,
-            requestSchool: request.requestSchool,
-            subject: request.subject,
-            grade: request.grade,
-            requestedHours: request.requestedHours,
-            teacherId: teacher.teacherId,
-            homeSchool: teacher.homeSchool,
-            total: score.total,
-            distanceKm: score.distanceKm,
-            reason: request.reason,
-          };
-        }),
-    )
-    .sort((a, b) => b.total - a.total)
-    .slice(0, 5);
+function scoreClassName(score: number): string {
+  if (score >= 60) return "score high";
+  if (score >= 40) return "score medium";
+  return "score";
 }
 
 export default function Home() {
-  const schools = readSchoolMaster();
-  const samples = schools.slice(0, 5);
-  const recommendations = buildRecommendations(schools);
+  const schools = readDataJsonArray<SchoolMasterRow>("processed", "school_master.json");
+  const subjectHours = readDataJsonArray<SubjectHourRecord>("sample", "timetable_subject_hours.json");
+  const teacherCounts = readDataJsonArray<TeacherSubjectCountRecord>("sample", "teacher_subject_counts.json");
+  const demandEstimates = estimateCircuitDemand(subjectHours, teacherCounts);
+  const supplyEstimates = estimateCircuitSupply(subjectHours, teacherCounts);
+  const highDemandCount = demandEstimates.filter((estimate) => estimate.demandRiskScore >= 60).length;
+  const highSupplyCount = supplyEstimates.filter((estimate) => estimate.supplyPotentialScore >= 55).length;
 
   return (
     <main className="page">
-      <section className="summary">
-        <p className="eyebrow">대전 지역 중학교</p>
-        <h1>교육 공공데이터 수집 현황</h1>
-        {schools.length > 0 ? (
-          <p className="lead">
-            현재 정규화된 학교 기본정보 <strong>{schools.length.toLocaleString("ko-KR")}</strong>건을
-            확인했습니다.
-          </p>
-        ) : (
-          <p className="lead">아직 수집된 데이터가 없습니다. npm run fetch:schools를 먼저 실행하세요.</p>
-        )}
+      <section className="hero">
+        <p className="eyebrow">대전 지역 중학교 순회·겸임교사 배치 지원</p>
+        <h1>순회ON AI</h1>
+        <p className="subtitle">교육청 담당자를 위한 순회·겸임교사 수요 예측 및 배치 지원 서비스</p>
+        <p className="lead">
+          공공데이터 기반 과거 시간표·교원 현황을 분석하여 신학년도 순회 수요와 공급 가능성을
+          사전에 예측합니다. 실제 배치 단계에서는 학교 제출자료를 결합하여 학교별 유출·유입 시수
+          균형을 맞추는 다자 간 배치 후보를 추천합니다.
+        </p>
       </section>
 
-      {samples.length > 0 ? (
-        <section className="tableSection" aria-label="학교 기본정보 샘플">
+      <section className="metricGrid" aria-label="데이터 현황">
+        <article className="metricCard">
+          <span>학교 기본정보</span>
+          <strong>{formatNumber(schools.length)}</strong>
+          <p>school_master.json</p>
+        </article>
+        <article className="metricCard">
+          <span>시간표 기반 과목 시수 샘플</span>
+          <strong>{formatNumber(subjectHours.length)}</strong>
+          <p>timetable_subject_hours.json</p>
+        </article>
+        <article className="metricCard">
+          <span>표시과목별 교원 현황 샘플</span>
+          <strong>{formatNumber(teacherCounts.length)}</strong>
+          <p>teacher_subject_counts.json</p>
+        </article>
+        <article className="metricCard">
+          <span>순회 수요 위험 과목 수</span>
+          <strong>{formatNumber(highDemandCount)}</strong>
+          <p>위험도 60점 이상</p>
+        </article>
+        <article className="metricCard">
+          <span>순회 공급 가능 과목 수</span>
+          <strong>{formatNumber(highSupplyCount)}</strong>
+          <p>가능성 55점 이상</p>
+        </article>
+      </section>
+
+      <section className="section">
+        <div className="sectionHeader">
+          <p className="eyebrow">데이터 시점</p>
+          <h2>공공데이터와 신학년도 제출자료의 역할 구분</h2>
+        </div>
+        <div className="tableSection">
           <table>
             <thead>
               <tr>
-                <th>학교명</th>
-                <th>NEIS 코드</th>
-                <th>학교알리미 코드</th>
-                <th>구분</th>
-                <th>설립</th>
-                <th>남녀공학</th>
-                <th>주소</th>
+                <th>데이터</th>
+                <th>시점</th>
+                <th>성격</th>
+                <th>활용</th>
               </tr>
             </thead>
             <tbody>
-              {samples.map((school) => (
-                <tr key={school.neisSchoolCode}>
-                  <td>{school.schoolName}</td>
-                  <td>{school.neisSchoolCode}</td>
-                  <td>{school.schoolInfoCode || "-"}</td>
-                  <td>{school.level}</td>
-                  <td>{school.foundationType || "-"}</td>
-                  <td>{school.coedType || "-"}</td>
-                  <td>{school.address || "-"}</td>
+              <tr>
+                <td>공공데이터</td>
+                <td>전년도 또는 과거 확정 데이터</td>
+                <td>학교 위치, 학생 수, 교원 현황, 시간표</td>
+                <td>순회 수요·공급 가능성 사전 추정</td>
+              </tr>
+              <tr>
+                <td>학교 제출자료</td>
+                <td>신학년도 시작 전 예상 데이터</td>
+                <td>순회 요청 과목·시수, 지원 가능 시수</td>
+                <td>실제 배치 후보 산정 입력값</td>
+              </tr>
+              <tr>
+                <td>추천 결과</td>
+                <td>당해연도 배치 검토자료</td>
+                <td>장학사 검토용 후보</td>
+                <td>학교별 유출·유입 시수 균형 검토</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="section">
+        <div className="sectionHeader">
+          <p className="eyebrow">수요 예측</p>
+          <h2>순회 수요 위험도 상위 과목</h2>
+        </div>
+        <div className="tableSection">
+          <table>
+            <thead>
+              <tr>
+                <th>학교</th>
+                <th>과목</th>
+                <th>추정 주당시수</th>
+                <th>교원 수</th>
+                <th>학교 평균시수</th>
+                <th>수요 위험도</th>
+                <th>판단 근거</th>
+              </tr>
+            </thead>
+            <tbody>
+              {demandEstimates.slice(0, 10).map((estimate) => (
+                <tr key={`${estimate.schoolCode}-${estimate.subjectGroup}-demand`}>
+                  <td>{estimate.schoolName}</td>
+                  <td>{estimate.subjectGroup}</td>
+                  <td>{formatHours(estimate.subjectWeeklyHours)}</td>
+                  <td>{estimate.teacherCount}명</td>
+                  <td>{formatHours(estimate.schoolAverageHoursPerTeacher)}</td>
+                  <td>
+                    <span className={scoreClassName(estimate.demandRiskScore)}>
+                      {estimate.demandRiskScore}
+                    </span>
+                  </td>
+                  <td>{estimate.reason}</td>
                 </tr>
               ))}
             </tbody>
           </table>
-        </section>
-      ) : null}
-
-      <section className="nextStep">
-        <div className="sectionHeader">
-          <p className="eyebrow">MVP 추천 엔진</p>
-          <h2>다음 단계: 순회 배치 추천 MVP 준비 중</h2>
-          <p className="sectionLead">
-            샘플 내부 입력 데이터를 기준으로 교과, 학년, 전년도 연속성, 시수 여유, 담임 부담,
-            학교 간 거리를 종합해 추천 후보를 계산합니다.
-          </p>
         </div>
+      </section>
 
-        {recommendations.length > 0 ? (
-          <div className="tableSection" aria-label="순회 배치 추천 샘플">
-            <table>
-              <thead>
-                <tr>
-                  <th>요청</th>
-                  <th>요청 학교</th>
-                  <th>교과</th>
-                  <th>학년</th>
-                  <th>시수</th>
-                  <th>추천 교사</th>
-                  <th>소속교</th>
-                  <th>거리</th>
-                  <th>점수</th>
+      <section className="section">
+        <div className="sectionHeader">
+          <p className="eyebrow">공급 예측</p>
+          <h2>순회 공급 가능성 상위 과목</h2>
+        </div>
+        <div className="tableSection">
+          <table>
+            <thead>
+              <tr>
+                <th>학교</th>
+                <th>과목</th>
+                <th>추정 주당시수</th>
+                <th>교원 수</th>
+                <th>교원 1인당 시수</th>
+                <th>공급 가능성</th>
+                <th>판단 근거</th>
+              </tr>
+            </thead>
+            <tbody>
+              {supplyEstimates.slice(0, 10).map((estimate) => (
+                <tr key={`${estimate.schoolCode}-${estimate.subjectGroup}-supply`}>
+                  <td>{estimate.schoolName}</td>
+                  <td>{estimate.subjectGroup}</td>
+                  <td>{formatHours(estimate.subjectWeeklyHours)}</td>
+                  <td>{estimate.teacherCount}명</td>
+                  <td>{formatHours(estimate.subjectHoursPerTeacher)}</td>
+                  <td>
+                    <span className={scoreClassName(estimate.supplyPotentialScore)}>
+                      {estimate.supplyPotentialScore}
+                    </span>
+                  </td>
+                  <td>{estimate.reason}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {recommendations.map((recommendation) => (
-                  <tr key={`${recommendation.requestId}-${recommendation.teacherId}`}>
-                    <td>{recommendation.requestId}</td>
-                    <td>{recommendation.requestSchool}</td>
-                    <td>{recommendation.subject}</td>
-                    <td>{recommendation.grade}학년</td>
-                    <td>{recommendation.requestedHours}시간</td>
-                    <td>{recommendation.teacherId}</td>
-                    <td>{recommendation.homeSchool}</td>
-                    <td>
-                      {recommendation.distanceKm === null ? "-" : `${recommendation.distanceKm.toFixed(1)}km`}
-                    </td>
-                    <td>
-                      <strong>{recommendation.total}</strong>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <p className="emptyText">추천 결과를 계산할 샘플 데이터가 없습니다.</p>
-        )}
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="section">
+        <div className="sectionHeader">
+          <p className="eyebrow">배치 모델</p>
+          <h2>다자 간 시수 균형 문제로 접근</h2>
+        </div>
+        <div className="balanceGrid">
+          <article className="balanceCard">
+            <span>유출 시수</span>
+            <strong>A학교</strong>
+            <p>수학 2시간, 정보 4시간을 순회 지원하면 총 6시간을 외부에서 다시 받아야 합니다.</p>
+          </article>
+          <article className="balanceCard">
+            <span>유입 시수</span>
+            <strong>분할 보전</strong>
+            <p>B학교 한문 2시간, C학교 한문 2시간, D학교 체육 2시간처럼 여러 학교·여러 교사로 쪼개질 수 있습니다.</p>
+          </article>
+          <article className="balanceCard">
+            <span>추천 관점</span>
+            <strong>네트워크 배치</strong>
+            <p>학교 간 1:1 매칭이 아니라 학교별 유출·유입 시수 균형을 맞추는 네트워크 배치 문제로 접근합니다.</p>
+          </article>
+        </div>
+      </section>
+
+      <section className="section limitation">
+        <div className="sectionHeader">
+          <p className="eyebrow">한계 및 보완</p>
+          <h2>장학사 검토를 돕는 의사결정 지원 도구</h2>
+        </div>
+        <ul>
+          <li>현재 결과는 공공데이터와 샘플 데이터를 바탕으로 한 사전 예측 MVP입니다.</li>
+          <li>실제 순회 배치는 교육청이 수합하는 신학년도 제출자료와 결합해야 합니다.</li>
+          <li>학교교육과정 편성표는 공개되어도 HWP/HWPX 비정형 문서인 경우가 많아 자동 분석에 한계가 있습니다.</li>
+          <li>본 서비스는 최종 인사 결정을 대체하지 않고 장학사의 검토를 돕는 의사결정 지원 도구입니다.</li>
+        </ul>
       </section>
     </main>
   );
