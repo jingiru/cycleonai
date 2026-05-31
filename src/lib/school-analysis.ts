@@ -295,26 +295,79 @@ async function postSchoolInfoWeb<T>(pathname: string, params: URLSearchParams): 
   return new TextDecoder(charset).decode(buffer) as T;
 }
 
-async function findSchoolInfoWebId(schoolName: string) {
-  const cacheKey = `schoolinfo-web-school-${encodeURIComponent(schoolName)}`;
+function getSchoolInfoWebRegionCodes(school: SchoolCandidate) {
+  const address = school.address || "";
+
+  if (address.includes("대전광역시")) {
+    const sigunguCodeByName: Record<string, string> = {
+      동구: "3011000000",
+      중구: "3014000000",
+      서구: "3017000000",
+      유성구: "3020000000",
+      대덕구: "3023000000",
+    };
+    const sigunguCode = Object.entries(sigunguCodeByName).find(([name]) => address.includes(name))?.[1];
+
+    return {
+      sidoCode: "3000000000",
+      sigunguCode,
+    };
+  }
+
+  return {
+    sidoCode: "",
+    sigunguCode: "",
+  };
+}
+
+async function findSchoolInfoWebId(school: SchoolCandidate, year: number) {
+  const cacheKey = `schoolinfo-web-school-${encodeURIComponent(school.schoolName)}-${year}`;
   const cached = await readCache<{ shlIdfCd: string }>(cacheKey);
 
   if (cached?.shlIdfCd) {
     return cached.shlIdfCd;
   }
 
-  const schools = await postSchoolInfoWeb<Array<{ SHL_NM?: string; SHL_IDF_CD?: string }>>(
-    "/ei/ss/pneiss_a04_s0/getSchoolList.do",
-    new URLSearchParams({ SEARCH_WORD: schoolName }),
-  );
-  const school = schools.find((item) => item.SHL_NM === schoolName) || schools[0];
-  const shlIdfCd = school?.SHL_IDF_CD;
+  const regionCodes = getSchoolInfoWebRegionCodes(school);
+  const searchParams = new URLSearchParams({
+    PNF_YR: String(year),
+    GS_HANGMOK_CD: "11",
+    JG_HANGMOK_CD: "24",
+    HG_JONGRYU_GB: "03",
+    SIDO_CODE: regionCodes.sidoCode,
+    SIGUNGU_CODE: regionCodes.sigunguCode || "",
+  });
 
-  if (!shlIdfCd) {
-    throw new Error(`SchoolInfo web school id not found: ${schoolName}`);
+  searchParams.append("SULRIP_GB", "1");
+  searchParams.append("SULRIP_GB", "2");
+  searchParams.append("SULRIP_GB", "3");
+
+  const locationResult = await postSchoolInfoWeb<{
+    schoolList?: Array<{ SHL_NM?: string; SHL_IDF_CD?: string; SHL_CD?: string }>;
+  }>(
+    "/ei/ss/pneiss_a05_s0/selectSchoolListLocation.do",
+    searchParams,
+  );
+  const schoolCodeTail = school.schoolInfoCode.replace(/^S0*/, "");
+  let matchedSchool =
+    locationResult.schoolList?.find((item) => item.SHL_NM === school.schoolName) ||
+    locationResult.schoolList?.find((item) => item.SHL_CD?.endsWith(schoolCodeTail));
+
+  if (!matchedSchool?.SHL_IDF_CD) {
+    const schools = await postSchoolInfoWeb<Array<{ SHL_NM?: string; SHL_IDF_CD?: string }>>(
+      "/ei/ss/pneiss_a04_s0/getSchoolList.do",
+      new URLSearchParams({ SEARCH_WORD: school.schoolName }),
+    );
+    matchedSchool = schools.find((item) => item.SHL_NM === school.schoolName) || schools[0];
   }
 
-  await writeCache(cacheKey, { schoolName, shlIdfCd });
+  const shlIdfCd = matchedSchool?.SHL_IDF_CD;
+
+  if (!shlIdfCd) {
+    throw new Error(`SchoolInfo web school id not found: ${school.schoolName}`);
+  }
+
+  await writeCache(cacheKey, { schoolName: school.schoolName, year, shlIdfCd });
   return shlIdfCd;
 }
 
@@ -370,7 +423,7 @@ async function fetchTeacherRowsFromSchoolInfoWeb(
     return cached.rows;
   }
 
-  const shlIdfCd = await findSchoolInfoWebId(school.schoolName);
+  const shlIdfCd = await findSchoolInfoWebId(school, year);
   const html = await postSchoolInfoWeb<string>(
     "/ei/pp/Pneipp_b11_s0p.do",
     new URLSearchParams({
