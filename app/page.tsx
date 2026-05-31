@@ -1,259 +1,355 @@
-import fs from "node:fs";
-import path from "node:path";
+"use client";
 
+import { useMemo, useState } from "react";
+
+import { DataTable, Section, StatusCard } from "@/components/service-components";
+import { generateRecommendationExplanation, buildReportSummary } from "@/lib/explanation";
 import {
-  estimateCircuitDemand,
-  estimateCircuitSupply,
-  type SubjectHourRecord,
-  type TeacherSubjectCountRecord,
-} from "@/lib/circuit/estimate";
+  demandRecords,
+  publicDatasets,
+  recommendations,
+  teacherSupplies,
+  travelTimes,
+} from "@/lib/mock-data";
+import {
+  buildDemandRiskRows,
+  buildSupplyPotentialRows,
+  filterRecommendations,
+  getDashboardStats,
+  runSimulation,
+} from "@/lib/scoring";
 
-type SchoolMasterRow = {
-  schoolName: string;
-  neisSchoolCode: string;
-  schoolInfoCode: string;
-  level: string;
-  address: string;
-  latitude: number | null;
-  longitude: number | null;
-  foundationType: string;
-  coedType: string;
-};
+const menus = [
+  { label: "대시보드", href: "#dashboard" },
+  { label: "데이터 관리", href: "#data" },
+  { label: "순회교사 분석", href: "#analysis" },
+  { label: "AI 배치 추천", href: "#recommendation" },
+  { label: "시뮬레이션", href: "#simulation" },
+  { label: "보고서", href: "#report" },
+];
 
-function readDataJsonArray<T>(folder: "processed" | "sample", fileName: string): T[] {
-  const filePath = path.join(process.cwd(), "data", folder, fileName);
+const uploadTargets = [
+  {
+    name: "학교별 순회 수요 데이터",
+    fields: "school_name, subject, required_hours, reason, priority",
+    records: demandRecords.length,
+  },
+  {
+    name: "교사 공급 가능 데이터",
+    fields: "teacher_id, teacher_name, base_school, subject, available_hours, preferred_area, can_travel",
+    records: teacherSupplies.length,
+  },
+  {
+    name: "학교 간 이동시간 데이터",
+    fields: "from_school, to_school, travel_minutes, distance_km",
+    records: travelTimes.length,
+  },
+];
 
-  if (!fs.existsSync(filePath)) {
-    return [];
-  }
-
-  try {
-    const raw = fs.readFileSync(filePath, "utf8");
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as T[]) : [];
-  } catch (error) {
-    console.error(`[page] failed to read data/${folder}/${fileName}`, error);
-    return [];
-  }
+function scoreBadge(score: number) {
+  const tone = score >= 85 ? "good" : score >= 70 ? "caution" : "danger";
+  return <span className={`scoreBadge ${tone}`}>{score}</span>;
 }
 
-function formatNumber(value: number): string {
-  return value.toLocaleString("ko-KR");
-}
+function deltaLabel(value: number, reverse = false) {
+  if (value === 0) return <span className="delta neutral">변화 없음</span>;
 
-function formatHours(value: number | null): string {
-  return value === null ? "-" : `${value.toFixed(1)}시간`;
-}
-
-function scoreClassName(score: number): string {
-  if (score >= 60) return "score high";
-  if (score >= 40) return "score medium";
-  return "score";
+  const improved = reverse ? value < 0 : value > 0;
+  return <span className={`delta ${improved ? "up" : "down"}`}>{value > 0 ? "+" : ""}{value}</span>;
 }
 
 export default function Home() {
-  const schools = readDataJsonArray<SchoolMasterRow>("processed", "school_master.json");
-  const subjectHours = readDataJsonArray<SubjectHourRecord>("sample", "timetable_subject_hours.json");
-  const teacherCounts = readDataJsonArray<TeacherSubjectCountRecord>("sample", "teacher_subject_counts.json");
-  const demandEstimates = estimateCircuitDemand(subjectHours, teacherCounts);
-  const supplyEstimates = estimateCircuitSupply(subjectHours, teacherCounts);
-  const highDemandCount = demandEstimates.filter((estimate) => estimate.demandRiskScore >= 60).length;
-  const highSupplyCount = supplyEstimates.filter((estimate) => estimate.supplyPotentialScore >= 55).length;
+  const [maxSchoolsPerTeacher, setMaxSchoolsPerTeacher] = useState(2);
+  const [maxWeeklyHours, setMaxWeeklyHours] = useState(20);
+  const [travelLimitMinutes, setTravelLimitMinutes] = useState(30);
+  const [preferSameArea, setPreferSameArea] = useState(true);
+  const [preferPreferredTeachers, setPreferPreferredTeachers] = useState(true);
+  const [excludeNewTeachers, setExcludeNewTeachers] = useState(false);
+  const [studentDeclineRate, setStudentDeclineRate] = useState(3);
+  const [subjectDemandIncreaseRate, setSubjectDemandIncreaseRate] = useState(8);
+  const [newTeacherCount, setNewTeacherCount] = useState(1);
+  const [simulationMaxSchools, setSimulationMaxSchools] = useState(2);
+  const [simulationTravelLimit, setSimulationTravelLimit] = useState(30);
+
+  const demandRows = useMemo(() => buildDemandRiskRows(), []);
+  const supplyRows = useMemo(() => buildSupplyPotentialRows(), []);
+  const dashboardStats = useMemo(() => getDashboardStats(), []);
+  const recommendationRows = useMemo(
+    () =>
+      filterRecommendations({
+        maxSchoolsPerTeacher,
+        maxWeeklyHours,
+        travelLimitMinutes,
+        preferSameArea,
+        preferPreferredTeachers,
+        excludeNewTeachers,
+      }),
+    [
+      excludeNewTeachers,
+      maxSchoolsPerTeacher,
+      maxWeeklyHours,
+      preferPreferredTeachers,
+      preferSameArea,
+      travelLimitMinutes,
+    ],
+  );
+  const simulation = useMemo(
+    () =>
+      runSimulation({
+        studentDeclineRate,
+        subjectDemandIncreaseRate,
+        newTeacherCount,
+        maxSchoolsPerTeacher: simulationMaxSchools,
+        travelLimitMinutes: simulationTravelLimit,
+      }),
+    [newTeacherCount, simulationMaxSchools, simulationTravelLimit, studentDeclineRate, subjectDemandIncreaseRate],
+  );
+  const reportSummary = useMemo(
+    () =>
+      buildReportSummary({
+        riskySubjects: demandRows.slice(0, 4).map((row) => `${row.school} ${row.subject}`),
+        topRecommendation: recommendationRows[0] ?? recommendations[0],
+      }),
+    [demandRows, recommendationRows],
+  );
 
   return (
     <main className="page">
-      <section className="hero">
-        <p className="eyebrow">대전 지역 중학교 순회·겸임교사 배치 지원</p>
+      <header className="topbar">
+        <a className="brand" href="#dashboard" aria-label="순회ON AI 홈">
+          순회ON AI
+        </a>
+        <nav aria-label="주요 메뉴">
+          {menus.map((menu) => (
+            <a key={menu.href} href={menu.href}>
+              {menu.label}
+            </a>
+          ))}
+        </nav>
+      </header>
+
+      <section className="hero" id="dashboard">
+        <p className="eyebrow">순회교사 배치 의사결정 지원</p>
         <h1>순회ON AI</h1>
-        <p className="subtitle">교육청 담당자를 위한 순회·겸임교사 수요 예측 및 배치 지원 서비스</p>
-        <p className="lead">
-          공공데이터 기반 과거 시간표·교원 현황을 분석하여 신학년도 순회 수요와 공급 가능성을
-          사전에 예측합니다. 실제 배치 단계에서는 학교 제출자료를 결합하여 학교별 유출·유입 시수
-          균형을 맞추는 다자 간 배치 후보를 추천합니다.
+        <p className="subtitle">
+          공공데이터와 장학사 입력 데이터를 결합한 순회교사 AI 배치 의사결정 지원 서비스
         </p>
-      </section>
-
-      <section className="metricGrid" aria-label="데이터 현황">
-        <article className="metricCard">
-          <span>학교 기본정보</span>
-          <strong>{formatNumber(schools.length)}</strong>
-          <p>school_master.json</p>
-        </article>
-        <article className="metricCard">
-          <span>시간표 기반 과목 시수 샘플</span>
-          <strong>{formatNumber(subjectHours.length)}</strong>
-          <p>timetable_subject_hours.json</p>
-        </article>
-        <article className="metricCard">
-          <span>표시과목별 교원 현황 샘플</span>
-          <strong>{formatNumber(teacherCounts.length)}</strong>
-          <p>teacher_subject_counts.json</p>
-        </article>
-        <article className="metricCard">
-          <span>순회 수요 위험 과목 수</span>
-          <strong>{formatNumber(highDemandCount)}</strong>
-          <p>위험도 60점 이상</p>
-        </article>
-        <article className="metricCard">
-          <span>순회 공급 가능 과목 수</span>
-          <strong>{formatNumber(highSupplyCount)}</strong>
-          <p>가능성 55점 이상</p>
-        </article>
-      </section>
-
-      <section className="section">
-        <div className="sectionHeader">
-          <p className="eyebrow">데이터 시점</p>
-          <h2>공공데이터와 신학년도 제출자료의 역할 구분</h2>
-        </div>
-        <div className="tableSection">
-          <table>
-            <thead>
-              <tr>
-                <th>데이터</th>
-                <th>시점</th>
-                <th>성격</th>
-                <th>활용</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>공공데이터</td>
-                <td>전년도 또는 과거 확정 데이터</td>
-                <td>학교 위치, 학생 수, 교원 현황, 시간표</td>
-                <td>순회 수요·공급 가능성 사전 추정</td>
-              </tr>
-              <tr>
-                <td>학교 제출자료</td>
-                <td>신학년도 시작 전 예상 데이터</td>
-                <td>순회 요청 과목·시수, 지원 가능 시수</td>
-                <td>실제 배치 후보 산정 입력값</td>
-              </tr>
-              <tr>
-                <td>추천 결과</td>
-                <td>당해연도 배치 검토자료</td>
-                <td>장학사 검토용 후보</td>
-                <td>학교별 유출·유입 시수 균형 검토</td>
-              </tr>
-            </tbody>
-          </table>
+        <div className="heroPanel">
+          <strong>서비스 흐름</strong>
+          <span>공공데이터 수집/관리</span>
+          <span>장학사 업로드</span>
+          <span>수요·공급 분석</span>
+          <span>AI 배치 추천</span>
+          <span>시뮬레이션</span>
+          <span>보고서 생성</span>
         </div>
       </section>
 
-      <section className="section">
-        <div className="sectionHeader">
-          <p className="eyebrow">수요 예측</p>
-          <h2>순회 수요 위험도 상위 과목</h2>
+      <Section
+        id="dashboard-status"
+        eyebrow="Dashboard"
+        title="데이터 준비 상태"
+        description="현재 분석과 추천에 사용할 수 있는 데이터의 준비 정도를 한눈에 확인합니다."
+      >
+        <div className="statusGrid">
+          {dashboardStats.map((stat) => (
+            <StatusCard key={stat.label} {...stat} />
+          ))}
         </div>
-        <div className="tableSection">
-          <table>
-            <thead>
-              <tr>
-                <th>학교</th>
-                <th>과목</th>
-                <th>추정 주당시수</th>
-                <th>교원 수</th>
-                <th>학교 평균시수</th>
-                <th>수요 위험도</th>
-                <th>판단 근거</th>
-              </tr>
-            </thead>
-            <tbody>
-              {demandEstimates.slice(0, 10).map((estimate) => (
-                <tr key={`${estimate.schoolCode}-${estimate.subjectGroup}-demand`}>
-                  <td>{estimate.schoolName}</td>
-                  <td>{estimate.subjectGroup}</td>
-                  <td>{formatHours(estimate.subjectWeeklyHours)}</td>
-                  <td>{estimate.teacherCount}명</td>
-                  <td>{formatHours(estimate.schoolAverageHoursPerTeacher)}</td>
-                  <td>
-                    <span className={scoreClassName(estimate.demandRiskScore)}>
-                      {estimate.demandRiskScore}
-                    </span>
-                  </td>
-                  <td>{estimate.reason}</td>
-                </tr>
+      </Section>
+
+      <Section
+        id="data"
+        eyebrow="Data Management"
+        title="공공데이터와 장학사 입력 데이터 관리"
+        description="실제 API를 새로 지어내지 않고, 현재는 mock import로 업로드·검증·반영 흐름을 시연합니다."
+      >
+        <div className="splitGrid">
+          <div className="panel">
+            <div className="panelHeader">
+              <h3>공공데이터</h3>
+              <span>수집 상태</span>
+            </div>
+            <div className="datasetList">
+              {publicDatasets.map((dataset) => (
+                <article className="datasetItem" key={dataset.id}>
+                  <div>
+                    <strong>{dataset.name}</strong>
+                    <p>{dataset.description}</p>
+                    <small>{dataset.source} · {dataset.lastUpdated}</small>
+                  </div>
+                  <span className={`state ${dataset.status}`}>{dataset.records}건</span>
+                </article>
               ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
+            </div>
+          </div>
 
-      <section className="section">
-        <div className="sectionHeader">
-          <p className="eyebrow">공급 예측</p>
-          <h2>순회 공급 가능성 상위 과목</h2>
-        </div>
-        <div className="tableSection">
-          <table>
-            <thead>
-              <tr>
-                <th>학교</th>
-                <th>과목</th>
-                <th>추정 주당시수</th>
-                <th>교원 수</th>
-                <th>교원 1인당 시수</th>
-                <th>공급 가능성</th>
-                <th>판단 근거</th>
-              </tr>
-            </thead>
-            <tbody>
-              {supplyEstimates.slice(0, 10).map((estimate) => (
-                <tr key={`${estimate.schoolCode}-${estimate.subjectGroup}-supply`}>
-                  <td>{estimate.schoolName}</td>
-                  <td>{estimate.subjectGroup}</td>
-                  <td>{formatHours(estimate.subjectWeeklyHours)}</td>
-                  <td>{estimate.teacherCount}명</td>
-                  <td>{formatHours(estimate.subjectHoursPerTeacher)}</td>
-                  <td>
-                    <span className={scoreClassName(estimate.supplyPotentialScore)}>
-                      {estimate.supplyPotentialScore}
-                    </span>
-                  </td>
-                  <td>{estimate.reason}</td>
-                </tr>
+          <div className="panel">
+            <div className="panelHeader">
+              <h3>장학사 입력 데이터</h3>
+              <span>업로드 → 검증 → 반영</span>
+            </div>
+            <div className="uploadList">
+              {uploadTargets.map((target) => (
+                <article className="uploadCard" key={target.name}>
+                  <div>
+                    <strong>{target.name}</strong>
+                    <p>{target.fields}</p>
+                  </div>
+                  <div className="uploadFlow" aria-label="업로드 처리 단계">
+                    <span>업로드</span>
+                    <span>검증</span>
+                    <span>반영</span>
+                  </div>
+                  <button type="button">mock import {target.records}건</button>
+                </article>
               ))}
-            </tbody>
-          </table>
+            </div>
+          </div>
         </div>
-      </section>
+      </Section>
 
-      <section className="section">
-        <div className="sectionHeader">
-          <p className="eyebrow">배치 모델</p>
-          <h2>다자 간 시수 균형 문제로 접근</h2>
-        </div>
-        <div className="balanceGrid">
-          <article className="balanceCard">
-            <span>유출 시수</span>
-            <strong>A학교</strong>
-            <p>수학 2시간, 정보 4시간을 순회 지원하면 총 6시간을 외부에서 다시 받아야 합니다.</p>
-          </article>
-          <article className="balanceCard">
-            <span>유입 시수</span>
-            <strong>분할 보전</strong>
-            <p>B학교 한문 2시간, C학교 한문 2시간, D학교 체육 2시간처럼 여러 학교·여러 교사로 쪼개질 수 있습니다.</p>
-          </article>
-          <article className="balanceCard">
-            <span>추천 관점</span>
-            <strong>네트워크 배치</strong>
-            <p>학교 간 1:1 매칭이 아니라 학교별 유출·유입 시수 균형을 맞추는 네트워크 배치 문제로 접근합니다.</p>
-          </article>
-        </div>
-      </section>
+      <Section
+        id="analysis"
+        eyebrow="Analysis"
+        title="순회 수요·공급 분석"
+        description="장학사 입력 데이터와 공공데이터를 결합해 위험도와 공급 적합도를 계산합니다."
+      >
+        <div className="stack">
+          <div>
+            <h3>순회 수요 위험도 상위 과목</h3>
+            <DataTable
+              rows={demandRows.slice(0, 10)}
+              getRowKey={(row) => `${row.school}-${row.subject}`}
+              columns={[
+                { key: "school", label: "학교" },
+                { key: "subject", label: "과목" },
+                { key: "requiredHours", label: "필요 시수", render: (row) => `${row.requiredHours}시간` },
+                { key: "availableInSchoolHours", label: "교내 확보 가능 시수", render: (row) => `${row.availableInSchoolHours}시간` },
+                { key: "shortageHours", label: "부족 시수", render: (row) => `${row.shortageHours}시간` },
+                { key: "riskScore", label: "위험도 점수", render: (row) => scoreBadge(row.riskScore) },
+                { key: "reason", label: "판단 근거" },
+              ]}
+            />
+          </div>
 
-      <section className="section limitation">
-        <div className="sectionHeader">
-          <p className="eyebrow">한계 및 보완</p>
-          <h2>장학사 검토를 돕는 의사결정 지원 도구</h2>
+          <div>
+            <h3>순회 공급 가능성 상위 교사/과목</h3>
+            <DataTable
+              rows={supplyRows.slice(0, 10)}
+              getRowKey={(row) => `${row.teacher}-${row.subject}`}
+              columns={[
+                { key: "teacher", label: "교사" },
+                { key: "baseSchool", label: "소속교" },
+                { key: "subject", label: "과목" },
+                { key: "availableHours", label: "가능 시수", render: (row) => `${row.availableHours}시간` },
+                { key: "recommendedSchoolCount", label: "추천 가능 학교 수", render: (row) => `${row.recommendedSchoolCount}개` },
+                { key: "averageTravelMinutes", label: "평균 이동시간", render: (row) => `${row.averageTravelMinutes}분` },
+                { key: "fitScore", label: "공급 적합도", render: (row) => scoreBadge(row.fitScore) },
+                { key: "reason", label: "판단 근거" },
+              ]}
+            />
+          </div>
         </div>
-        <ul>
-          <li>현재 결과는 공공데이터와 샘플 데이터를 바탕으로 한 사전 예측 MVP입니다.</li>
-          <li>실제 순회 배치는 교육청이 수합하는 신학년도 제출자료와 결합해야 합니다.</li>
-          <li>학교교육과정 편성표는 공개되어도 HWP/HWPX 비정형 문서인 경우가 많아 자동 분석에 한계가 있습니다.</li>
-          <li>본 서비스는 최종 인사 결정을 대체하지 않고 장학사의 검토를 돕는 의사결정 지원 도구입니다.</li>
-        </ul>
-      </section>
+      </Section>
+
+      <Section
+        id="recommendation"
+        eyebrow="AI Recommendation"
+        title="AI 배치 추천"
+        description="LLM API 없이 deterministic explanation generator로 조건 기반 추천 설명을 생성합니다."
+      >
+        <div className="recommendationLayout">
+          <aside className="controlPanel">
+            <h3>입력 조건</h3>
+            <label>
+              순회학교 최대 개수
+              <input type="number" min={1} max={4} value={maxSchoolsPerTeacher} onChange={(event) => setMaxSchoolsPerTeacher(Number(event.target.value))} />
+            </label>
+            <label>
+              교사 주당 최대 수업시수
+              <input type="number" min={10} max={24} value={maxWeeklyHours} onChange={(event) => setMaxWeeklyHours(Number(event.target.value))} />
+            </label>
+            <label>
+              평균 이동시간 제한
+              <input type="number" min={10} max={60} value={travelLimitMinutes} onChange={(event) => setTravelLimitMinutes(Number(event.target.value))} />
+            </label>
+            <label className="check"><input type="checkbox" checked={preferSameArea} onChange={(event) => setPreferSameArea(event.target.checked)} /> 동일 생활권 우선</label>
+            <label className="check"><input type="checkbox" checked={preferPreferredTeachers} onChange={(event) => setPreferPreferredTeachers(event.target.checked)} /> 희망교사 우선</label>
+            <label className="check"><input type="checkbox" checked={excludeNewTeachers} onChange={(event) => setExcludeNewTeachers(event.target.checked)} /> 신규교사 제외</label>
+          </aside>
+
+          <div className="recommendationGrid">
+            {recommendationRows.map((recommendation, index) => (
+              <article className="recommendationCard" key={recommendation.id}>
+                <div className="cardTitle">
+                  <span>추천안 {index + 1}</span>
+                  {scoreBadge(recommendation.fitScore)}
+                </div>
+                <h3>{recommendation.teacherName} · {recommendation.subject}</h3>
+                <dl>
+                  <div><dt>소속교</dt><dd>{recommendation.baseSchool}</dd></div>
+                  <div><dt>배정 학교</dt><dd>{recommendation.assignedSchools.join(", ")}</dd></div>
+                  <div><dt>총 담당 시수</dt><dd>{recommendation.totalHours}시간</dd></div>
+                  <div><dt>평균 이동시간</dt><dd>{recommendation.averageTravelMinutes}분</dd></div>
+                  <div><dt>해결되는 부족 시수</dt><dd>{recommendation.resolvedShortageHours}시간</dd></div>
+                </dl>
+                <p>{generateRecommendationExplanation(recommendation)}</p>
+              </article>
+            ))}
+            {recommendationRows.length === 0 ? (
+              <article className="emptyState">현재 조건을 만족하는 추천안이 없습니다. 이동시간 또는 최대 학교 수 조건을 완화해 주세요.</article>
+            ) : null}
+          </div>
+        </div>
+      </Section>
+
+      <Section
+        id="simulation"
+        eyebrow="Simulation"
+        title="조건 변경 시뮬레이션"
+        description="학생 수, 과목 수요, 신규 교사, 이동 조건을 바꿔 배치 결과의 변화를 확인합니다."
+      >
+        <div className="simulationGrid">
+          <div className="controlPanel">
+            <h3>시뮬레이션 조건</h3>
+            <label>학생 수 감소율 <input type="range" min={0} max={20} value={studentDeclineRate} onChange={(event) => setStudentDeclineRate(Number(event.target.value))} /> <b>{studentDeclineRate}%</b></label>
+            <label>특정 과목 수요 증가율 <input type="range" min={0} max={30} value={subjectDemandIncreaseRate} onChange={(event) => setSubjectDemandIncreaseRate(Number(event.target.value))} /> <b>{subjectDemandIncreaseRate}%</b></label>
+            <label>신규 교사 추가 수 <input type="number" min={0} max={8} value={newTeacherCount} onChange={(event) => setNewTeacherCount(Number(event.target.value))} /></label>
+            <label>순회학교 최대 개수 변경 <input type="number" min={1} max={4} value={simulationMaxSchools} onChange={(event) => setSimulationMaxSchools(Number(event.target.value))} /></label>
+            <label>이동시간 제한 변경 <input type="number" min={10} max={60} value={simulationTravelLimit} onChange={(event) => setSimulationTravelLimit(Number(event.target.value))} /></label>
+          </div>
+          <div className="resultGrid">
+            <StatusCard label="예상 순회교사 수" value={`${simulation.expectedCircuitTeachers}명`} status="기존 대비" detail={`${simulation.teacherDelta >= 0 ? "+" : ""}${simulation.teacherDelta}명`} />
+            <StatusCard label="미해결 부족 시수" value={`${simulation.unresolvedShortageHours}시간`} status="낮을수록 좋음" detail="기존 대비 " />
+            <div className="miniResult">{deltaLabel(simulation.shortageDelta, true)}</div>
+            <StatusCard label="평균 이동시간" value={`${simulation.averageTravelMinutes}분`} status="이동 부담" detail="기존 대비" />
+            <div className="miniResult">{deltaLabel(simulation.travelDelta, true)}</div>
+            <StatusCard label="교사 평균 부담 점수" value={simulation.averageBurdenScore} status="100점 만점" detail="기존 대비" />
+            <div className="miniResult">{deltaLabel(simulation.burdenDelta, true)}</div>
+          </div>
+        </div>
+      </Section>
+
+      <Section
+        id="report"
+        eyebrow="Report"
+        title="보고서 미리보기"
+        description="현재 분석 결과를 장학사 검토용 보고서 구조로 요약합니다."
+      >
+        <div className="reportPreview">
+          <div className="reportActions">
+            <h3>순회교사 AI 배치 분석 보고서</h3>
+            <button type="button" disabled>PDF 내보내기 준비중</button>
+          </div>
+          <article><strong>데이터 출처 요약</strong><p>{reportSummary.sources}</p></article>
+          <article><strong>분석 기준</strong><p>{reportSummary.criteria}</p></article>
+          <article><strong>주요 위험 과목</strong><p>{reportSummary.risks}</p></article>
+          <article><strong>추천 배치안</strong><p>{reportSummary.recommendation}</p></article>
+          <article><strong>기대 효과</strong><p>{reportSummary.impact}</p></article>
+          <article><strong>한계 및 보완점</strong><p>{reportSummary.limitation}</p></article>
+        </div>
+      </Section>
     </main>
   );
 }
